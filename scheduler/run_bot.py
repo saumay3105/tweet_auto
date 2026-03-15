@@ -96,20 +96,29 @@ def run_pipeline(dry_run: bool = False):
         logger.warning("No topics collected — aborting this run.")
         return
 
-    # 2. Rank
-    logger.info("Ranking topics…")
-    ranked = rank(topics)
-    if not ranked:
-        logger.warning("Ranker returned no topics — aborting.")
-        return
-
-    # 3. Init storage (no-op in dry-run)
+    # 2. Init storage FIRST so we can filter duplicates before ranking
     if not dry_run:
         try:
             history_manager.init()
         except RuntimeError as exc:
             logger.error("DB init failed: %s — aborting.", exc)
             return
+
+        # Filter out already-posted topics BEFORE ranking
+        fresh = [t for t in topics if not history_manager.is_duplicate(t.get("url", ""))]
+        logger.info("Fresh topics (not yet posted): %d / %d", len(fresh), len(topics))
+        if not fresh:
+            logger.warning("All scraped topics already posted — nothing new to share.")
+            return
+    else:
+        fresh = topics
+
+    # 3. Rank only fresh topics
+    logger.info("Ranking %d fresh topics…", len(fresh))
+    ranked = rank(fresh)
+    if not ranked:
+        logger.warning("Ranker returned no topics — aborting.")
+        return
 
     posted_count = 0
     max_posts = POSTS_PER_RUN if not dry_run else len(ranked)
@@ -126,12 +135,7 @@ def run_pipeline(dry_run: bool = False):
 
         logger.info("\n▶ Processing: [%.4f] %s (%s)", score, title[:70], source)
 
-        # 4. Duplicate check
-        if not dry_run and history_manager.is_duplicate(url):
-            logger.info("  ⏭  Duplicate — skipping: %s", url[:80])
-            continue
-
-        # 5. Generate thread
+        # 4. Generate thread
         try:
             thread = generate_thread(topic)
         except Exception as exc:
@@ -152,7 +156,7 @@ def run_pipeline(dry_run: bool = False):
             posted_count += 1
             continue
 
-        # 6. Post to Threads
+        # 5. Post to Threads
         logger.info("  Posting thread to Threads…")
         success = post_thread(thread)
 

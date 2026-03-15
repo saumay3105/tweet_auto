@@ -35,7 +35,7 @@ REQUEST_RETRIES: int = 3              # Number of retry attempts
 REQUEST_BACKOFF_FACTOR: float = 1.5   # Exponential backoff multiplier
 
 # ── Ranking ───────────────────────────────────────────────────────────────────
-RANKING_TOP_N: int = 3               # How many top topics to evaluate
+RANKING_TOP_N: int = 10              # How many top topics to evaluate
 POSTS_PER_RUN: int = int(os.environ.get("POSTS_PER_RUN", "1"))  # Threads to post per run
 
 SOURCE_WEIGHTS: dict = {

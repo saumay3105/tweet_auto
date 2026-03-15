@@ -105,10 +105,53 @@ The workflow is located at `.github/workflows/post.yml`.
 
 ---
 
+## 📊 Ranking Matrix
+
+Every run, the bot collects ~40 topics from 4 sources and scores each using a weighted formula:
+
+```
+trend_score = (engagement × 0.5) + (recency × 0.3) + (source_weight × 0.2)
+```
+
+### Scoring Components
+
+| Component | Weight | How It Works |
+|-----------|--------|-------------|
+| **Engagement** | 50% | Log-normalized score (`log(1+score) / log(1+max_score)`). Prevents viral outliers from dominating. |
+| **Recency** | 30% | Position-based: first item in list = 1.0, last = ~0.0. Favors freshly trending topics. |
+| **Source Weight** | 20% | Fixed weight per source (see table below). Prioritizes higher-signal sources. |
+
+### Source Weights
+
+| Source | Weight | Why |
+|--------|--------|-----|
+| GitHub Trending | 1.0 | Strongest signal — repos trend based on real developer activity (stars, forks). |
+| Hacker News | 0.9 | High-quality curation — community upvotes filter for technical depth. |
+| arXiv CS.AI | 0.8 | Cutting-edge research — slightly lower since papers don't always have mass appeal. |
+| Reddit | 0.7 | Broadest reach but noisier — popular posts can be opinion-heavy. |
+
+### Pipeline Flow
+
+```
+40 topics scraped
+    ↓
+Filter out already-posted (DB check)
+    ↓
+Score & rank remaining fresh topics
+    ↓
+Pick #1 topic → Generate thread → Post to Threads
+    ↓
+Record in DB (won't be picked again)
+```
+
+---
+
 ## Features
 
 - **Freestyle AI Copywriting**: No templates. Gemini writes curiosity-driven hooks and insights.
 - **Smart Fallback**: If Gemini hits a rate limit, the bot uses a rule-based generator with page context.
 - **Markdown Stripping**: Automatic removal of `**bold**` and `*italic*` for clean Threads rendering.
-- **Duplicate Prevention**: Remembers the last 200 topics in PostgreSQL to avoid reposting.
+- **Duplicate Prevention**: Filters already-posted topics **before** ranking, so the bot always picks something fresh.
 - **Auto-stop**: If posting fails, the bot stops immediately to prevent spamming the API.
+- **1 Thread Per Run**: Posts only the single best topic per run — quality over quantity.
+
