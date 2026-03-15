@@ -2,15 +2,15 @@
 posting/threads_poster.py
 Posts to Meta Threads using the official Graph API.
 
-No browser automation — just two REST calls:
-  1. POST /{user_id}/threads  → create a media container
-  2. POST /{user_id}/threads_publish → publish it
+Auto-refreshes the access token on every run so it never expires.
+The token refresh extends the expiry by 60 days from current time.
+As long as the bot runs at least once every 60 days, you never
+need to manually update the token.
 
-Setup:
-  1. Create a Meta Developer app at https://developers.facebook.com
-  2. Add "Threads API" product to your app
-  3. Generate a long-lived access token with threads_content_publish permission
-  4. Set THREADS_USER_ID and THREADS_ACCESS_TOKEN in .env
+No browser automation — just REST calls:
+  1. GET  /refresh_access_token    → refresh token (extends 60 days)
+  2. POST /{user_id}/threads       → create a media container
+  3. POST /{user_id}/threads_publish → publish it
 
 Rate limit: 250 posts per 24 hours.
 Post limit: 500 characters per post.
@@ -26,6 +26,48 @@ logger = logging.getLogger(__name__)
 
 API_BASE = "https://graph.threads.net/v1.0"
 
+# Module-level token that gets refreshed at runtime
+_active_token = THREADS_ACCESS_TOKEN
+
+
+def refresh_token() -> str:
+    """
+    Refresh the long-lived token. Returns the new token string,
+    or falls back to the original if refresh fails.
+    """
+    global _active_token
+
+    if not THREADS_ACCESS_TOKEN:
+        return ""
+
+    url = f"{API_BASE}/refresh_access_token"
+    params = {
+        "grant_type": "th_refresh_token",
+        "access_token": THREADS_ACCESS_TOKEN,
+    }
+
+    try:
+        resp = requests.get(url, params=params, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        new_token = data.get("access_token", "")
+        expires_in = data.get("expires_in", 0)
+        days = expires_in // 86400
+        if new_token:
+            _active_token = new_token
+            logger.info("Token refreshed — valid for %d more days.", days)
+            return new_token
+    except Exception as exc:
+        logger.warning("Token refresh failed (will use existing token): %s", exc)
+
+    _active_token = THREADS_ACCESS_TOKEN
+    return _active_token
+
+
+def get_token() -> str:
+    """Return the currently active (possibly refreshed) token."""
+    return _active_token
+
 
 def create_container(text: str, reply_to_id: str = None) -> str | None:
     """
@@ -36,7 +78,7 @@ def create_container(text: str, reply_to_id: str = None) -> str | None:
     params = {
         "media_type": "TEXT",
         "text": text,
-        "access_token": THREADS_ACCESS_TOKEN,
+        "access_token": _active_token,
     }
     if reply_to_id:
         params["reply_to_id"] = reply_to_id
@@ -61,7 +103,7 @@ def publish_container(container_id: str) -> str | None:
     url = f"{API_BASE}/{THREADS_USER_ID}/threads_publish"
     params = {
         "creation_id": container_id,
-        "access_token": THREADS_ACCESS_TOKEN,
+        "access_token": _active_token,
     }
 
     try:
@@ -79,8 +121,8 @@ def publish_container(container_id: str) -> str | None:
 
 def post_thread(thread: list[str]) -> bool:
     """
-    Post a thread on Threads. The first post is a standalone post,
-    subsequent posts are replies to build a thread.
+    Post a thread on Threads. Auto-refreshes the token first.
+    The first post is standalone, subsequent posts are replies.
 
     Returns True if at least the first post succeeded.
     """
@@ -95,13 +137,16 @@ def post_thread(thread: list[str]) -> bool:
         logger.warning("Empty thread — nothing to post.")
         return False
 
+    # Refresh token before posting
+    refresh_token()
+
     # ── Post 1: standalone ────────────────────────────────────────────────────
     logger.info("Creating container for post 1/%d…", len(thread))
     container_id = create_container(thread[0])
     if not container_id:
         return False
 
-    # Wait for server to process (Meta recommends ~30s, but text is fast)
+    # Wait for server to process
     time.sleep(5)
 
     logger.info("Publishing post 1…")
@@ -115,7 +160,7 @@ def post_thread(thread: list[str]) -> bool:
     last_post_id = first_post_id
 
     for i, text in enumerate(thread[1:], start=2):
-        time.sleep(3)  # Brief delay between replies
+        time.sleep(3)
 
         logger.info("Creating container for post %d/%d (reply)…", i, len(thread))
         container_id = create_container(text, reply_to_id=last_post_id)
