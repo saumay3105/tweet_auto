@@ -1,4 +1,4 @@
-# Tech Trend AI Bot 🤖🔥
+# Tech Trend AI Bot
 
 A fully autonomous bot that discovers trending tech topics from Hacker News, GitHub Trending, arXiv, and Reddit — ranks them, generates viral Meta Threads threads using Gemini AI, and posts them automatically.
 
