@@ -6,9 +6,6 @@ on:
     - cron: '30 13 * * *'
   workflow_dispatch:  # Allow manual trigger
 
-permissions:
-  contents: read
-
 jobs:
   post:
     runs-on: ubuntu-latest
@@ -27,38 +24,10 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Refresh Threads token
-        id: refresh
-        env:
-          THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
-        run: |
-          # Refresh the long-lived token (extends by 60 days)
-          RESPONSE=$(curl -s "https://graph.threads.net/v1.0/refresh_access_token?grant_type=th_refresh_token&access_token=$THREADS_ACCESS_TOKEN")
-          NEW_TOKEN=$(echo "$RESPONSE" | python -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null || echo "")
-          if [ -n "$NEW_TOKEN" ]; then
-            echo "✅ Token refreshed successfully"
-            echo "token=$NEW_TOKEN" >> $GITHUB_OUTPUT
-          else
-            echo "⚠️ Token refresh failed, using existing token"
-            echo "token=$THREADS_ACCESS_TOKEN" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Persist refreshed token
-        if: steps.refresh.outputs.token != ''
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-        run: |
-          if [ -n "$GH_TOKEN" ]; then
-            echo "${{ steps.refresh.outputs.token }}" | gh secret set THREADS_ACCESS_TOKEN
-            echo "✅ Secret updated with refreshed token"
-          else
-            echo "ℹ️ GH_PAT not set — skipping secret persistence (token still refreshed in-memory)"
-          fi
-
       - name: Run bot (single post)
         env:
           THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
-          THREADS_ACCESS_TOKEN: ${{ steps.refresh.outputs.token }}
+          THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           POSTS_PER_RUN: '1'

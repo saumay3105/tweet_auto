@@ -2,15 +2,13 @@
 posting/threads_poster.py
 Posts to Meta Threads using the official Graph API.
 
-Auto-refreshes the access token on every run so it never expires.
-The token refresh extends the expiry by 60 days from current time.
-As long as the bot runs at least once every 60 days, you never
-need to manually update the token.
+Token refresh only happens if a post fails with an auth error.
+The token is NOT refreshed on every run to avoid triggering
+Meta's abuse detection.
 
 No browser automation — just REST calls:
-  1. GET  /refresh_access_token    → refresh token (extends 60 days)
-  2. POST /{user_id}/threads       → create a media container
-  3. POST /{user_id}/threads_publish → publish it
+  1. POST /{user_id}/threads       -> create a media container
+  2. POST /{user_id}/threads_publish -> publish it
 
 Rate limit: 250 posts per 24 hours.
 Post limit: 500 characters per post.
@@ -26,24 +24,24 @@ logger = logging.getLogger(__name__)
 
 API_BASE = "https://graph.threads.net/v1.0"
 
-# Module-level token that gets refreshed at runtime
+# Module-level token — starts as the env value, refreshed only on auth failure
 _active_token = THREADS_ACCESS_TOKEN
 
 
-def refresh_token() -> str:
+def refresh_token() -> bool:
     """
-    Refresh the long-lived token. Returns the new token string,
-    or falls back to the original if refresh fails.
+    Refresh the long-lived token. Only called when a post fails with auth error.
+    Returns True if refresh succeeded.
     """
     global _active_token
 
-    if not THREADS_ACCESS_TOKEN:
-        return ""
+    if not _active_token:
+        return False
 
     url = f"{API_BASE}/refresh_access_token"
     params = {
         "grant_type": "th_refresh_token",
-        "access_token": THREADS_ACCESS_TOKEN,
+        "access_token": _active_token,
     }
 
     try:
@@ -56,17 +54,23 @@ def refresh_token() -> str:
         if new_token:
             _active_token = new_token
             logger.info("Token refreshed — valid for %d more days.", days)
-            return new_token
+            return True
     except Exception as exc:
-        logger.warning("Token refresh failed (will use existing token): %s", exc)
+        logger.warning("Token refresh failed: %s", exc)
 
-    _active_token = THREADS_ACCESS_TOKEN
-    return _active_token
+    return False
 
 
-def get_token() -> str:
-    """Return the currently active (possibly refreshed) token."""
-    return _active_token
+def is_auth_error(exc: Exception) -> bool:
+    """Check if an HTTP error is an auth/token issue (code 190 or 401)."""
+    if hasattr(exc, "response") and exc.response is not None:
+        try:
+            body = exc.response.json()
+            error_code = body.get("error", {}).get("code", 0)
+            return error_code in (190, 200) or exc.response.status_code == 401
+        except Exception:
+            return exc.response.status_code in (401, 403)
+    return False
 
 
 def create_container(text: str, reply_to_id: str = None) -> str | None:
@@ -121,8 +125,8 @@ def publish_container(container_id: str) -> str | None:
 
 def post_thread(thread: list[str]) -> bool:
     """
-    Post a thread on Threads. Auto-refreshes the token first.
-    The first post is standalone, subsequent posts are replies.
+    Post a thread on Threads. If the first post fails with an auth error,
+    refreshes the token and retries once.
 
     Returns True if at least the first post succeeded.
     """
@@ -137,16 +141,18 @@ def post_thread(thread: list[str]) -> bool:
         logger.warning("Empty thread — nothing to post.")
         return False
 
-    # Refresh token before posting
-    refresh_token()
-
     # ── Post 1: standalone ────────────────────────────────────────────────────
     logger.info("Creating container for post 1/%d…", len(thread))
     container_id = create_container(thread[0])
-    if not container_id:
-        return False
 
-    # Wait for server to process
+    # If first post fails, try refreshing token once and retry
+    if not container_id:
+        logger.info("First attempt failed — trying token refresh…")
+        if refresh_token():
+            container_id = create_container(thread[0])
+        if not container_id:
+            return False
+
     time.sleep(5)
 
     logger.info("Publishing post 1…")
@@ -154,9 +160,9 @@ def post_thread(thread: list[str]) -> bool:
     if not first_post_id:
         return False
 
-    logger.info("✅ Post 1 published (ID: %s).", first_post_id)
+    logger.info("Post 1 published (ID: %s).", first_post_id)
 
-    # ── Posts 2–N: replies to build a thread ──────────────────────────────────
+    # ── Posts 2-N: replies to build a thread ──────────────────────────────────
     last_post_id = first_post_id
 
     for i, text in enumerate(thread[1:], start=2):
@@ -176,7 +182,7 @@ def post_thread(thread: list[str]) -> bool:
             logger.error("Failed to publish post %d.", i)
             break
 
-        logger.info("✅ Post %d published (ID: %s).", i, post_id)
+        logger.info("Post %d published (ID: %s).", i, post_id)
         last_post_id = post_id
 
     return True

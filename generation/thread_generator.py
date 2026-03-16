@@ -7,9 +7,8 @@ No fixed templates — Gemini writes freestyle based on a copywriting brief.
 When Gemini is unavailable, a smart fallback uses fetched page context + 
 keyword-aware writing to produce something specific and readable.
 
-The only hard constraint: each post ≤ 500 characters (Threads limit).
+The only hard constraint: each post <= 500 characters (Threads limit).
 """
-import json
 import logging
 import random
 import re
@@ -24,13 +23,6 @@ from generation.summarizer import fetch_page_context, extract_keywords
 logger = logging.getLogger(__name__)
 
 _gemini_client = None
-
-SOURCE_EMOJIS = {
-    "github": "💻",
-    "hackernews": "📡",
-    "arxiv": "🔬",
-    "reddit": "🔥",
-}
 
 
 # ── Gemini client ─────────────────────────────────────────────────────────────
@@ -53,49 +45,30 @@ def get_gemini_client():
 def strip_markdown(text: str) -> str:
     """
     Remove markdown formatting so posts render as clean plain text on Threads.
-    Handles: **bold**, *italic*, __underline__, ~~strike~~, `code`,
-    ```code blocks```, # headers, - bullets, > quotes, [links](url).
     """
-    # Remove code blocks (```...```)
     text = re.sub(r"```[\s\S]*?```", "", text)
-    # Remove inline code (`...`)
     text = re.sub(r"`([^`]+)`", r"\1", text)
-    # Remove bold+italic (***text*** or ___text___)
     text = re.sub(r"[*_]{3}(.+?)[*_]{3}", r"\1", text)
-    # Remove bold (**text** or __text__)
     text = re.sub(r"[*_]{2}(.+?)[*_]{2}", r"\1", text)
-    # Remove italic (*text* or _text_) — careful not to break underscored_words
     text = re.sub(r"(?<![\w*])\*([^*]+)\*(?![\w*])", r"\1", text)
-    # Remove strikethrough (~~text~~)
     text = re.sub(r"~~(.+?)~~", r"\1", text)
-    # Remove headers (# Title)
     text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
-    # Remove blockquotes (> text)
     text = re.sub(r"^>\s?", "", text, flags=re.MULTILINE)
-    # Remove bullet points (- item or * item)
     text = re.sub(r"^[\-*]\s+", "", text, flags=re.MULTILINE)
-    # Remove numbered lists (1. item)
     text = re.sub(r"^\d+\.\s+", "", text, flags=re.MULTILINE)
-    # Convert markdown links [text](url) to just text
     text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
-    # Clean up any leftover multiple spaces/newlines
     text = re.sub(r" {2,}", " ", text)
     return text.strip()
 
 
 def split_into_posts(raw: str, max_len: int = MAX_TWEET_CHARS) -> list[str]:
-    """
-    Take a raw multi-post string (separated by blank lines or '---') and
-    return a list of clean post strings, each ≤ max_len characters.
-    """
-    # Split on blank lines or '---' dividers
+    """Split raw text into individual posts, each <= max_len characters."""
     blocks = re.split(r"\n\s*---\s*\n|\n{2,}", raw.strip())
     posts = []
     for block in blocks:
         block = strip_markdown(block)
         if not block:
             continue
-        # Hard-truncate if over limit
         if len(block) > max_len:
             block = block[:max_len - 1].rstrip() + "…"
         posts.append(block)
@@ -118,8 +91,8 @@ def validate_thread(posts: list[str]) -> list[str]:
 
 def generate_with_gemini(topic: dict, context: str) -> list[str] | None:
     """
-    Ask Gemini to freely write a 4-5 tweet thread.
-    Returns a list of tweet strings, or None on total failure.
+    Ask Gemini to freely write a 4-5 post thread.
+    Returns a list of post strings, or None on total failure.
     """
     client = get_gemini_client()
     if not client:
@@ -128,7 +101,6 @@ def generate_with_gemini(topic: dict, context: str) -> list[str] | None:
     title = topic.get("title", "")
     url = topic.get("url", "")
     source = topic.get("source", "")
-    emoji = SOURCE_EMOJIS.get(source, "🔥")
 
     prompt = f"""You are a viral tech personality on Threads — sharp, opinionated, slightly provocative.
 Your posts make developers stop scrolling and actually read.
@@ -142,12 +114,13 @@ Extra context: {context[:600] if context else "Not available"}
 
 RULES (non-negotiable):
 - Do NOT use a rigid template. Write naturally, like a real person sharing something exciting.
-- Post 1 must be a killer hook — a surprising fact, a bold claim, a question, or a contrarian take. Use {emoji} once.
+- Post 1 must be a killer hook — a surprising fact, a bold claim, a question, or a contrarian take.
 - Each subsequent post must flow from the previous and ADD new information or perspective.
 - Use concrete specifics (numbers, names, comparisons) not vague statements.
 - End the thread with the URL on its own post: "→ {url}"
 - NO hashtags. NO "Follow for more". NO cringe phrases like "game-changing" or "revolutionizing".
 - NO markdown formatting. No **bold**, no *italic*, no headers, no bullet points. Write plain text only.
+- NO emojis whatsoever. Write clean, professional text.
 - Each post MUST be under 500 characters.
 - Separate posts with a blank line. Nothing else between them.
 
@@ -163,8 +136,8 @@ Write the thread now. Only output the posts, nothing else."""
             if len(tweets) >= 3:
                 logger.info("Gemini wrote %d-post thread for: %s", len(tweets), title[:50])
                 return tweets
-            logger.warning("Gemini output had only %d usable tweets — retrying.", len(tweets))
-            raise ValueError("Not enough tweets")
+            logger.warning("Gemini output had only %d usable posts — retrying.", len(tweets))
+            raise ValueError("Not enough posts")
         except Exception as exc:
             logger.warning("Gemini attempt %d/%d failed: %s", attempt, REQUEST_RETRIES, exc)
             if attempt < REQUEST_RETRIES:
@@ -178,15 +151,12 @@ Write the thread now. Only output the posts, nothing else."""
 
 def build_fallback_thread(topic: dict, context: str) -> list[str]:
     """
-    When Gemini is unavailable, write a specific, engaging thread using:
-    - Page-fetched context
-    - Keyword detection for specific insights
-    - Varied, non-formulaic sentence patterns
+    When Gemini is unavailable, write a specific, engaging thread using
+    page-fetched context and keyword detection.
     """
     title = topic.get("title", "")
     url = topic.get("url", "")
     source = topic.get("source", "").lower()
-    emoji = SOURCE_EMOJIS.get(source, "🔥")
     keywords = [k.lower() for k in extract_keywords(title)]
 
     # ── Hook variants (pick based on topic type) ───────────────────────────────
@@ -194,63 +164,60 @@ def build_fallback_thread(topic: dict, context: str) -> list[str]:
 
     if any(k in keywords for k in ["agent", "agents", "autonomous", "agentic"]):
         hooks = [
-            f"{emoji} AI agents that run themselves without human input just got more capable.\n\nThis is the project everyone will be talking about next week: {title}",
-            f"{emoji} What if your AI could write code, debug it, and ship it — all without you?\n\nThat's closer to reality now. Here's why: {title}",
+            f"AI agents that run themselves without human input just got more capable.\n\nThis is the project everyone will be talking about next week: {title}",
+            f"What if your AI could write code, debug it, and ship it — all without you?\n\nThat's closer to reality now. Here's why: {title}",
         ]
     elif any(k in keywords for k in ["context", "tokens", "memory", "window", "1m", "million"]):
         hooks = [
-            f"{emoji} Fitting an entire codebase into one AI prompt just became real.\n\n{title} — and it's free to try right now.",
-            f"{emoji} Imagine asking an AI to review your entire repo in one shot.\n\nThat's what {title} unlocks.",
+            f"Fitting an entire codebase into one AI prompt just became real.\n\n{title} — and it's free to try right now.",
+            f"Imagine asking an AI to review your entire repo in one shot.\n\nThat's what {title} unlocks.",
         ]
     elif any(k in keywords for k in ["llm", "gpt", "claude", "gemini", "model", "open-source", "mistral", "llama"]):
         hooks = [
-            f"{emoji} Another AI model dropped — but this one is different.\n\n{title}",
-            f"{emoji} The open-source AI race just got more competitive.\n\n{title} — here's what changed.",
+            f"Another AI model dropped — but this one is different.\n\n{title}",
+            f"The open-source AI race just got more competitive.\n\n{title} — here's what changed.",
         ]
     elif any(k in keywords for k in ["rust", "go", "python", "typescript", "zig", "language"]):
         hooks = [
-            f"{emoji} The programming language wars are heating up.\n\n{title} is trending among engineers right now.",
-            f"{emoji} Developers are switching tools — and this is causing it:\n\n{title}",
+            f"The programming language wars are heating up.\n\n{title} is trending among engineers right now.",
+            f"Developers are switching tools — and this is causing it:\n\n{title}",
         ]
     elif any(k in keywords for k in ["security", "vulnerability", "exploit", "breach", "hack", "cve"]):
         hooks = [
-            f"{emoji} There's a security issue making the rounds in the dev community.\n\nIf you ship software, read this: {title}",
-            f"{emoji} A security flaw just surfaced that affects a lot of production systems.\n\n{title} — details inside.",
+            f"There's a security issue making the rounds in the dev community.\n\nIf you ship software, read this: {title}",
+            f"A security flaw just surfaced that affects a lot of production systems.\n\n{title} — details inside.",
         ]
     elif any(k in keywords for k in ["paper", "research", "study", "benchmark", "arxiv"]):
         hooks = [
-            f"{emoji} A new AI paper just dropped that challenges some widely held assumptions.\n\n{title}",
-            f"{emoji} Researchers published something interesting that most engineers haven't seen yet:\n\n{title}",
+            f"A new AI paper just dropped that challenges some widely held assumptions.\n\n{title}",
+            f"Researchers published something interesting that most engineers haven't seen yet:\n\n{title}",
         ]
     elif source == "github":
         hooks = [
-            f"{emoji} A project just hit the GitHub trending page and it's surprisingly useful:\n\n{title}",
-            f"{emoji} Open-source developers shipped something worth bookmarking today:\n\n{title}",
+            f"A project just hit the GitHub trending page and it's surprisingly useful:\n\n{title}",
+            f"Open-source developers shipped something worth bookmarking today:\n\n{title}",
         ]
     elif source == "hackernews":
         hooks = [
-            f"{emoji} This post hit the top of Hacker News today — and the comments are even more interesting:\n\n{title}",
-            f"{emoji} Something on HN is generating serious discussion among engineers right now:\n\n{title}",
+            f"This post hit the top of Hacker News today — and the comments are even more interesting:\n\n{title}",
+            f"Something on HN is generating serious discussion among engineers right now:\n\n{title}",
         ]
 
-    # Default hook
     if not hooks:
         hooks = [
-            f"{emoji} This tech topic is generating serious attention and it's easy to see why:\n\n{title}",
-            f"{emoji} Developers across the internet are reacting to this right now:\n\n{title}",
+            f"This tech topic is generating serious attention and it's easy to see why:\n\n{title}",
+            f"Developers across the internet are reacting to this right now:\n\n{title}",
         ]
 
     hook = random.choice(hooks)
 
-    # ── Body tweet (context-driven) ────────────────────────────────────────────
+    # ── Body (context-driven) ──────────────────────────────────────────────────
     if context and len(context) > 40 and context.lower()[:60] != title.lower()[:60]:
-        # Take the first clean sentence of the context
         first_sentence = re.split(r"(?<=[.!?])\s+", context.strip())[0]
         if len(first_sentence) > 220:
             first_sentence = first_sentence[:220] + "…"
         body = first_sentence
     else:
-        # Derive a body from keywords
         kw_str = " + ".join(k.capitalize() for k in keywords[:3]) if keywords else title
         topic_bodies = [
             f"What makes this compelling: it addresses a problem most teams hit regularly but rarely talk about — {kw_str}.",
@@ -258,7 +225,7 @@ def build_fallback_thread(topic: dict, context: str) -> list[str]:
         ]
         body = random.choice(topic_bodies)
 
-    # ── Insight tweet ──────────────────────────────────────────────────────────
+    # ── Insight ────────────────────────────────────────────────────────────────
     insights = []
     if any(k in keywords for k in ["agent", "autonomous", "agentic"]):
         insights = [
@@ -290,11 +257,9 @@ def build_fallback_thread(topic: dict, context: str) -> list[str]:
         ]
 
     insight = random.choice(insights)
+    source_post = f"Read more: {url}"
 
-    # ── Source tweet ───────────────────────────────────────────────────────────
-    source_tweet = f"→ {url}"
-
-    thread = [hook, body, insight, source_tweet]
+    thread = [hook, body, insight, source_post]
     return validate_thread(thread)
 
 
@@ -304,28 +269,25 @@ def generate_thread(topic: dict) -> list[str]:
     """
     Generate a creative, curiosity-driven Threads post thread.
     Tries Gemini first, falls back to smart heuristic generation.
-    Returns a list of post strings, each ≤ 500 characters.
+    Returns a list of post strings, each <= 500 characters.
     """
     title = topic.get("title", "")
     url = topic.get("url", "")
     logger.info("Generating thread for: %s", title[:60])
 
-    # Fetch richer context from the URL
     context = topic.get("description", "")
     if len(context) < 40 and url:
         logger.info("Fetching page context for %s…", url[:70])
         context = fetch_page_context(url)
 
-    # Try Gemini (free creative generation)
     thread = generate_with_gemini(topic, context)
 
-    # Smart fallback if Gemini unavailable or fails
     if not thread:
         logger.info("Using smart fallback thread generator.")
         thread = build_fallback_thread(topic, context)
 
-    for i, tweet in enumerate(thread, 1):
-        logger.debug("Tweet %d (%d chars): %s", i, len(tweet), tweet[:60].replace("\n", " "))
+    for i, post in enumerate(thread, 1):
+        logger.debug("Post %d (%d chars): %s", i, len(post), post[:60].replace("\n", " "))
 
     return thread
 
@@ -337,10 +299,10 @@ if __name__ == "__main__":
         "url": "https://github.com/msitarzewski/agency-agents",
         "source": "github",
         "score": 1500,
-        "description": "A complete AI agency at your fingertips — frontend wizards, Reddit community ninjas, whimsy injectors, and more.",
+        "description": "A complete AI agency at your fingertips.",
     }
     thread = generate_thread(sample)
     print("\n" + "=" * 60)
-    for i, tweet in enumerate(thread, 1):
-        print(f"\nTweet {i} ({len(tweet)} chars):\n{tweet}")
+    for i, post in enumerate(thread, 1):
+        print(f"\nPost {i} ({len(post)} chars):\n{post}")
         print("-" * 40)
